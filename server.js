@@ -6,11 +6,12 @@ import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
 import cookieParser from "cookie-parser";
 import cors from "cors";
-import Database from "better-sqlite3";
+
 import multer from "multer";
 
+import Database from "better-sqlite3";
 
-
+const db = new Database("my_app.db");
 db.pragma("journal_mode = WAL");
 
 
@@ -332,7 +333,7 @@ app.get("/api/tab/:tab_id", isLoggedIn, (req, res) =>{
 
 //////////////////// EDIT TAB NAME ////////////////////
 
-app.put("/api/edit-tab/:tab_id", isLoggedIn, (req, res) => {
+app.put("/api/edit-tab/:tab_id", isLoggedIn, isTabOwner, (req, res) => {
     const userId = req.user.id;
     const tabId = req.params.tab_id;
     const newName = req.body.name;
@@ -352,7 +353,7 @@ app.put("/api/edit-tab/:tab_id", isLoggedIn, (req, res) => {
 
 //////////////////// DELETE TAB ////////////////////
 
-app.delete("/delete-tab/:tab_id", isLoggedIn, isTabOwner, (req, res) => {
+app.delete("/api/delete-tab/:tab_id", isLoggedIn, isTabOwner, (req, res) => {
     const userId = req.user.id;
     const tabId = req.params.tab_id;
 
@@ -541,7 +542,7 @@ app.get("/api/thread/:thread_id", isLoggedIn, (req, res) => {
     const threadId = req.params.thread_id;
     
     const thread = getThread(threadId, userId);
-    if (!thread) res.status(404).json({error: "Thread not found"});
+    if (!thread) return res.status(404).json({error: "Thread not found"});
     
     res.status(200).json({
         success: true, 
@@ -556,7 +557,7 @@ app.put("/api/edit-thread/:thread_id", isLoggedIn, (req, res) => {
     const threadId = req.params.thread_id;
 
     const thread = getThread(threadId, userId);
-    if (!thread) res.json(404).json({error: "Thread not found"});
+    if (!thread) return res.json(404).json({error: "Thread not found"});
 
     const name = req.body.name;
 
@@ -673,6 +674,8 @@ app.post( "/api/thread/:thread_id/send-chat", isLoggedIn, isThreadOwner, async (
     });
 });
 
+//////////////////// GET ALL CHATS ////////////////////
+
 
 app.get("/api/thread/:thread_id/chats", isLoggedIn, isThreadOwner, (req, res) => {
     const userId = req.user.id;
@@ -688,62 +691,61 @@ app.get("/api/thread/:thread_id/chats", isLoggedIn, isThreadOwner, (req, res) =>
 //////////////////// UPLOAD IMAGE 
 ////////////////////////////////////////
 
-import multer from "multer";
-import path from "path";
+// import path from "path";
 
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    cb(null, "uploads/");
-  },
-  filename: (req, file, cb) => {
-    const uniqueName =
-      Date.now() + "-" + file.originalname.replace(/\s+/g, "");
-    cb(null, uniqueName);
-  }
-});
+// const storage = multer.diskStorage({
+//   destination: (req, file, cb) => {
+//     cb(null, "uploads/");
+//   },
+//   filename: (req, file, cb) => {
+//     const uniqueName =
+//       Date.now() + "-" + file.originalname.replace(/\s+/g, "");
+//     cb(null, uniqueName);
+//   }
+// });
 
-export const upload = multer({ storage });
+// export const upload = multer({ storage });
 
-const router = express.Router();
+// const router = express.Router();
 
 
-router.post("/api/chat-image", 
-    upload.single("image"), // field name from FormData
-    async (req, res) => {
+// router.post("/api/chat-image", 
+//     upload.single("image"), // field name from FormData
+//     async (req, res) => {
 
-    try {
-        const message = req.body.message;
-        const file = req.file;
+//     try {
+//         const message = req.body.message;
+//         const file = req.file;
 
-        if (!file) {
-            return res.status(400).json({
-                success: false,
-                error: "No image uploaded"
-            });
-        }
+//         if (!file) {
+//             return res.status(400).json({
+//                 success: false,
+//                 error: "No image uploaded"
+//             });
+//         }
 
-        const imagePath = file.path;
+//         const imagePath = file.path;
 
-      // Call AI
-        const aiResponse = await analyzeImage(imagePath);
+//       // Call AI
+//         const aiResponse = await analyzeImage(imagePath);
 
-        res.json({
-            success: true,
-            user_message: message,
-            ai_response: aiResponse,
-            image: imagePath
-        });
-    } 
-    catch (err) {
-        console.error(err);
-        res.status(500).json({
-            error: "Server error"
-        });
-    }
-  }
-);
+//         res.json({
+//             success: true,
+//             user_message: message,
+//             ai_response: aiResponse,
+//             image: imagePath
+//         });
+//     } 
+//     catch (err) {
+//         console.error(err);
+//         res.status(500).json({
+//             error: "Server error"
+//         });
+//     }
+//   }
+// );
 
-export default router;
+// export default router;
 
 
 
