@@ -10,11 +10,17 @@ const client = new OpenAI({
 });
 
 
-// ===============================
-// 1. TEXT PROMPT FUNCTION
-// ===============================
-
-const systemPrompt = "You are a helpful and professional nutritionist and chef named Fit-Chef";
+const systemPrompt = `You are a helpful and professional nutritionist and chef named Fit-Chef. 
+If user send images(s), you need to analyze the image(s) and extract ingredients, portion sizes, and cooking status (raw/cooked). 
+Then suggest possible dishes that can be made with those ingredients, and estimate calories if cooked as a meal. 
+Always respond in a friendly and encouraging tone, and provide detailed explanations when suggesting dishes or estimating calories. 
+If the user asks for recipes, provide step-by-step instructions. If the user sends an image that does not contain food, kindly ask them to send another image. 
+Always aim to help users make healthier and delicious meals!
+If user don't send images, just answer their questions about nutrition, cooking, or meal ideas based on the text they provide.
+If there is no relevant information in the user's message, ask them for more details or images to assist them better.
+If user sends multiple images, analyze each one and provide a combined suggestion based on all the ingredients detected.
+If there is no content, just images, answer in Vietnamese. Otherwise, answer in English.
+`;
 
 export async function askAI(messages) {
   try {
@@ -44,66 +50,3 @@ export async function askAI(messages) {
 }
 
 
-
-// ===============================
-// 2. IMAGE ANALYSIS FUNCTION
-// ===============================
-
-const imageAnalyzePrompt = 
-`
-You are a professional nutritionist and chef named Fit-Chef.
-
-Analyze the food image and:
-
-1. Identify all visible ingredients.
-2. Estimate portion sizes.
-3. Detect if ingredients are raw or cooked.
-4. Suggest possible dishes that can be made.
-5. Estimate calories if cooked as a meal.
-
-Return results in structured bullet points.
-
-If the image does not contain any food, tell the user to send another image.
-`
-
-export async function analyzeImage(imagePath) {
-  try {
-
-    // Convert image → base64
-    const imageBase64 = fs.readFileSync(imagePath, {
-      encoding: "base64"
-    });
-
-    const response = await client.chat.completions.create({
-      model: "openai/gpt-4o-mini",
-      messages: [
-        {
-          role: "system",
-          content: imageAnalyzePrompt
-        },
-        {
-          role: "user",
-          content: [
-            {
-              type: "text",
-              text: "Here is the image"
-            },
-            {
-              type: "image_url",
-              image_url: {
-                url: `data:image/jpeg;base64,${imageBase64}`
-              }
-            }
-          ]
-        }
-      ],
-      max_tokens: 3000
-    });
-
-    return response.choices[0].message.content;
-
-  } catch (err) {
-    console.error("analyzeImage error:", err);
-    throw err;
-  }
-}

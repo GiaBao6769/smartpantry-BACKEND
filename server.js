@@ -8,6 +8,8 @@ import cookieParser from "cookie-parser";
 import cors from "cors";
 
 import multer from "multer";
+import path from "path";
+import fs from "fs";
 
 import Database from "better-sqlite3";
 
@@ -87,6 +89,42 @@ db.prepare(
     `
 ).run();
 
+////////////////////////////////////////
+//////////////////// UPLOAD IMAGE 
+////////////////////////////////////////
+
+
+
+const uploadDir = "uploads";
+
+// Create folder if not exists
+if (!fs.existsSync(uploadDir)) {
+  fs.mkdirSync(uploadDir);
+}
+
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    cb(null, uploadDir);
+  },
+  filename: (req, file, cb) => {
+    const uniqueName =
+      Date.now() + "-" + file.originalname.replace(/\s+/g, "");
+    cb(null, uniqueName);
+  }
+});
+
+const upload = multer({
+  storage,
+  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB limit
+  fileFilter: (req, file, cb) => {
+    if (file.mimetype.startsWith("image/")) {
+      cb(null, true);
+    } else {
+      cb(new Error("Only images allowed"), false);
+    }
+  }
+});
+
 
 //////////////////// APP SETUP ////////////////////
 
@@ -105,6 +143,7 @@ app.use(express.json());
 app.use(cookieParser());
 
 app.use(express.static("../frontend"));
+app.use("/uploads", express.static("uploads"));
 
 app.use(function(req, res, next){
     // decode cookie
@@ -226,14 +265,15 @@ app.post("/api/login", (req, res) => {
 app.post("/api/logout", (req, res) => {
     res.clearCookie("logged", {
         httpOnly: true,
-        secure: false,
-        sameSite: "lax",
-        path: "/"
+        secure: isProduction ? true : false,
+        sameSite: isProduction ? "none" : "lax",
+        path: "/",
     });
 
 
   return res.json({ success: true });
 });
+
 //////////////////// AUTHENTIFICATION CHECK API ////////////////////
 
 app.get("/api/me", (req, res) => {
@@ -243,7 +283,103 @@ app.get("/api/me", (req, res) => {
   res.json({ loggedIn: true, user: req.user });
 });
 
+//////////////////// RENAME API ////////////////////
 
+app.put("/api/rename", isLoggedIn, (req, res) => {
+    const userId = req.user.id;
+    const newName = req.body.name;
+    const password = req.body.password;
+    const user = db.prepare("SELECT * FROM users WHERE id = ?").get(userId);
+    const match = bcrypt.compareSync(password, user.password);
+    if (!match) return res.status(400).json({ error: "Password is incorrect" });
+
+    if (typeof newName !== "string" || newName.trim().length < 3 || newName.trim().length > 10 || !/^[a-zA-Z0-9]+$/.test(newName)) {
+        return res.status(400).json({ error: "Invalid name" });
+    }
+    db.prepare(
+        `
+        UPDATE users
+        SET username = ?
+        WHERE id = ?
+        `
+    ).run(newName, userId);
+
+    res.json({ success: true });
+});
+
+
+//////////////////// CHANGE PASSWORD API ////////////////////
+
+app.put("/api/change-password", isLoggedIn, (req, res) => {
+    const userId = req.user.id;
+    const { oldPassword, newPassword } = req.body;
+    const user = db.prepare("SELECT * FROM users WHERE id = ?").get(userId);
+    if (!user) return res.status(404).json({ error: "User not found" });
+    const match = bcrypt.compareSync(oldPassword, user.password);
+    if (!match) return res.status(400).json({ error: "Old password is incorrect" });
+
+    if (newPassword.length < 8 || newPassword.length > 50) {
+        return res.status(400).json({ error: "New password must be between 8 and 50 characters long" });
+    }
+    const newHash = bcrypt.hashSync(newPassword, 10);
+    db.prepare("UPDATE users SET password = ? WHERE id = ?").run(newHash, userId);
+    res.json({ success: true });
+});
+
+//////////////////// DELETE ACCOUNT API ////////////////////
+
+app.delete("/api/delete-account", isLoggedIn, (req, res) => {
+    const userId = req.user.id;
+    const password = req.body.password;
+    const user = db.prepare("SELECT * FROM users WHERE id = ?").get(userId);
+    if (!user) return res.status(404).json({ error: "User not found" });
+    const match = bcrypt.compareSync(password, user.password);
+    if (!match) return res.status(400).json({ error: "Password is incorrect" });
+    
+    try {
+        // Get all chats with images for this user
+        const chats = db.prepare(
+            `SELECT image_path FROM chats WHERE user_id = ?`
+        ).all(userId);
+
+        // Delete image files
+        chats.forEach(chat => {
+            if (chat.image_path) {
+                try {
+                    const imagePaths = JSON.parse(chat.image_path);
+                    if (Array.isArray(imagePaths)) {
+                        imagePaths.forEach(imgPath => {
+                            if (fs.existsSync(imgPath)) {
+                                fs.unlinkSync(imgPath);
+                                console.log(`[DELETE ACCOUNT] Removed image: ${imgPath}`);
+                            }
+                        });
+                    }
+                } catch (e) {
+                    console.error(`[DELETE ACCOUNT] Error parsing image_path:`, e);
+                }
+            }
+        });
+
+        // Delete all user data from database
+        db.prepare("DELETE FROM threads WHERE user_id = ?").run(userId);
+        db.prepare("DELETE FROM tabs WHERE user_id = ?").run(userId);
+        db.prepare("DELETE FROM blocks WHERE user_id = ?").run(userId);
+        db.prepare("DELETE FROM chats WHERE user_id = ?").run(userId);
+        db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+        
+        res.clearCookie("logged", {
+            httpOnly: true,
+            secure: isProduction ? true : false,
+            sameSite: isProduction ? "none" : "lax",
+            path: "/",
+        });
+        res.json({ success: true });
+    } catch (err) {
+        console.error('[DELETE ACCOUNT ERROR]', err);
+        res.status(500).json({ error: "Failed to delete account", details: err.message });
+    }
+});
 
 
 
@@ -557,7 +693,7 @@ app.put("/api/edit-thread/:thread_id", isLoggedIn, (req, res) => {
     const threadId = req.params.thread_id;
 
     const thread = getThread(threadId, userId);
-    if (!thread) return res.json(404).json({error: "Thread not found"});
+    if (!thread) return res.status(404).json({error: "Thread not found"});
 
     const name = req.body.name;
 
@@ -576,106 +712,248 @@ app.delete("/api/delete-thread/:thread_id", isLoggedIn, isThreadOwner, (req, res
     const userId = req.user.id;
     const threadId = req.params.thread_id;
 
-    db.prepare(
-        `DELETE FROM chats
-        WHERE thread_id = ?`
-    ).run(threadId);
+    try {
+        // Get all chats with images for this thread
+        const chats = db.prepare(
+            `SELECT image_path FROM chats WHERE thread_id = ?`
+        ).all(threadId);
 
-    db.prepare(
-        `DELETE FROM threads
-        WHERE id = ? AND user_id = ?
-        `
-    ).run(threadId, userId);
+        // Delete image files
+        chats.forEach(chat => {
+            if (chat.image_path) {
+                try {
+                    const imagePaths = JSON.parse(chat.image_path);
+                    if (Array.isArray(imagePaths)) {
+                        imagePaths.forEach(imgPath => {
+                            if (fs.existsSync(imgPath)) {
+                                fs.unlinkSync(imgPath);
+                                console.log(`[DELETE] Removed image: ${imgPath}`);
+                            }
+                        });
+                    }
+                } catch (e) {
+                    console.error(`[DELETE] Error parsing image_path:`, e);
+                }
+            }
+        });
 
-    res.status(200).json({success: true});
+        // Delete chats and thread from database
+        db.prepare(
+            `DELETE FROM chats WHERE thread_id = ?`
+        ).run(threadId);
+
+        db.prepare(
+            `DELETE FROM threads WHERE id = ? AND user_id = ?`
+        ).run(threadId, userId);
+
+        res.status(200).json({success: true});
+    } catch (err) {
+        console.error('[DELETE THREAD ERROR]', err);
+        res.status(500).json({ error: "Failed to delete thread", details: err.message });
+    }
 });
 
 //////////////////// QUERY ////////////////////
 
 function getChats(threadId, userId){
-    const chats = db.prepare(`
-        SELECT role, content
+    return db.prepare(
+        `SELECT role, content, image_path
         FROM chats
         WHERE thread_id = ? AND user_id = ?
         ORDER BY id ASC
     `).all(threadId, userId);
-    return chats;
 }
+
+
+
 
 //////////////////// SEND A CHAT ////////////////////
 
-import {askAI, analyzeImage} from "./ai_modules.js";
+import {askAI} from "./ai_modules.js";
+app.post(
+  "/api/thread/:thread_id/send-chat",
+  isLoggedIn,
+  isThreadOwner,
+  upload.array("images", 3), // allow up to 3 images
+  async (req, res) => {
 
-app.post( "/api/thread/:thread_id/send-chat", isLoggedIn, isThreadOwner, async (req, res) => {
     const userId = req.user.id;
     const threadId = req.params.thread_id;
-    const content = req.body.content;
+    const content = req.body.content || "";
+    const files = req.files || [];
 
-    // 1. Save user message
 
-    db.prepare(`
-        INSERT INTO chats (thread_id, user_id, content, role)
-        VALUES (?, ?, ?, 'user')
-    `).run(threadId, userId, content);
+    // Save user message
+    db.prepare(
+        `INSERT INTO chats (thread_id, user_id, content, image_path, role)
+        VALUES (?, ?, ?, ?, 'user')
+    `).run(
+      threadId,
+      userId,
+      content,
+      files.length ? JSON.stringify(files.map(f => f.path)) : null
+    );
 
-    // 2. Load full chat history
+    // Get chat history
+    const chats = db.prepare(`
+        SELECT role, content, image_path
+        FROM chats
+        WHERE thread_id = ? AND user_id = ?
+        ORDER BY id DESC
+        LIMIT 10
+    `).all(threadId, userId).reverse();
 
-    const chats = getChats(threadId, userId);
+    // Build OpenAI messages
+    const messages = [];
 
-    // 3. Build OpenAI messages
-
-    const messages = [
-      {
-        role: "system",
-        content: "You are a helpful nutritionist and chef"
-      },
-      ...chats.map(chat => ({
+    // Process chat history WITHOUT images
+    for (const chat of chats) {
+      messages.push({
         role: chat.role,
         content: chat.content
-      }))
-    ];
-
-    // 4. Ask AI
-
-    let aiResponse;
-
-    const aiReject = `Sorry, I can't answer your question right now. Please retry after a few minutes.`
-
-    try {
-        aiResponse = await askAI(messages);
-    } 
-    catch (err) {
-
-        db.prepare(`
-            INSERT INTO chats (thread_id, user_id, content, role)
-            VALUES (?, ?, ?, 'assistant')
-        `).run(threadId, userId, aiReject);
-        
-        return res.status(500).json({
-            error: "AI request failed"
-        });
+      });
     }
 
-    // 5. Save AI reply
+    // Add current message with images if present
+    if (files.length > 0) {
+      const imagePaths = files.map(f => f.path);
+      const contentArray = [];
 
+      if (content) {
+        contentArray.push({
+          type: "text",
+          text: content
+        });
+      }
+
+      for (const imgPath of imagePaths) {
+        const imageBase64 = fs.readFileSync(imgPath, { encoding: "base64" });
+
+        const ext = path.extname(imgPath).toLowerCase();
+        const mime =
+            ext === ".png" ? "image/png" :
+            ext === ".webp" ? "image/webp" :
+            "image/jpeg";
+
+        contentArray.push({
+            type: "image_url",
+            image_url: {
+            url: `data:${mime};base64,${imageBase64}`
+            }
+        });
+      }
+
+      // Replace the last user message (current one) with images
+      if (messages.length > 0 && messages[messages.length - 1].role === 'user') {
+        messages[messages.length - 1].content = contentArray;
+      }
+    }
+
+    // Ask AI
+    let aiResponse;
+
+    try {
+      aiResponse = await askAI(messages);
+    } catch (err) {
+
+      const failMsg = "Sorry, AI is temporarily unavailable.";
+
+      db.prepare(`
+        INSERT INTO chats (thread_id, user_id, content, role)
+        VALUES (?, ?, ?, 'assistant')
+      `).run(threadId, userId, failMsg);
+
+      return res.status(500).json({ error: "AI failed" });
+    }
+
+    // Save assistant reply
     db.prepare(`
       INSERT INTO chats (thread_id, user_id, content, role)
       VALUES (?, ?, ?, 'assistant')
     `).run(threadId, userId, aiResponse);
 
-    //////////////////////////////////////////////////
-    // 6. Return response
-    //////////////////////////////////////////////////
-
     res.json({
       success: true,
-      user_message: content,
       ai_response: aiResponse
     });
-});
+  }
+);
 
 //////////////////// GET ALL CHATS ////////////////////
 
+// app.post(
+//   "/api/thread/:thread_id/send-chat",
+//   isLoggedIn,
+//   isThreadOwner,
+//   upload.array("images", 3), // allow up to 3 images
+//   async (req, res) => {
+
+//     const userId = req.user.id;
+//     const threadId = req.params.thread_id;
+//     const content = req.body.content || "";
+//     const files = req.files || [];
+
+//     // Save user message
+//     db.prepare(`
+//       INSERT INTO chats (thread_id, user_id, content, image_path, role)
+//       VALUES (?, ?, ?, ?, 'user')
+//     `).run(
+//       threadId,
+//       userId,
+//       content,
+//       files.length ? JSON.stringify(files.map(f => f.path)) : null
+//     );
+
+//     // Get chat history
+//     const chats = db.prepare(`
+//         SELECT role, content, image_path
+//         FROM chats
+//         WHERE thread_id = ? AND user_id = ?
+//         ORDER BY id DESC
+//         LIMIT 10
+//     `).all(threadId, userId).reverse();
+
+//     // Build OpenAI messages
+//     const messages = [];
+
+//     for (const chat of chats) {
+
+//       // If message has images
+//         messages.push({
+//           role: chat.role,
+//           content: chat.content
+//         });
+//     }
+
+//     // Ask AI
+//     let aiResponse;
+
+//     try {
+//       aiResponse = await askAI(messages);
+//     } catch (err) {
+
+//       const failMsg = "Sorry, AI is temporarily unavailable.";
+
+//       db.prepare(`
+//         INSERT INTO chats (thread_id, user_id, content, role)
+//         VALUES (?, ?, ?, 'assistant')
+//       `).run(threadId, userId, failMsg);
+
+//       return res.status(500).json({ error: "AI failed" });
+//     }
+
+//     // Save assistant reply
+//     db.prepare(`
+//       INSERT INTO chats (thread_id, user_id, content, role)
+//       VALUES (?, ?, ?, 'assistant')
+//     `).run(threadId, userId, aiResponse);
+
+//     res.json({
+//       success: true,
+//       ai_response: aiResponse
+//     });
+//   }
+// );
 
 app.get("/api/thread/:thread_id/chats", isLoggedIn, isThreadOwner, (req, res) => {
     const userId = req.user.id;
@@ -686,67 +964,6 @@ app.get("/api/thread/:thread_id/chats", isLoggedIn, isThreadOwner, (req, res) =>
     res.status(200).json({success: true, chats});
 
 });
-
-////////////////////////////////////////
-//////////////////// UPLOAD IMAGE 
-////////////////////////////////////////
-
-// import path from "path";
-
-// const storage = multer.diskStorage({
-//   destination: (req, file, cb) => {
-//     cb(null, "uploads/");
-//   },
-//   filename: (req, file, cb) => {
-//     const uniqueName =
-//       Date.now() + "-" + file.originalname.replace(/\s+/g, "");
-//     cb(null, uniqueName);
-//   }
-// });
-
-// export const upload = multer({ storage });
-
-// const router = express.Router();
-
-
-// router.post("/api/chat-image", 
-//     upload.single("image"), // field name from FormData
-//     async (req, res) => {
-
-//     try {
-//         const message = req.body.message;
-//         const file = req.file;
-
-//         if (!file) {
-//             return res.status(400).json({
-//                 success: false,
-//                 error: "No image uploaded"
-//             });
-//         }
-
-//         const imagePath = file.path;
-
-//       // Call AI
-//         const aiResponse = await analyzeImage(imagePath);
-
-//         res.json({
-//             success: true,
-//             user_message: message,
-//             ai_response: aiResponse,
-//             image: imagePath
-//         });
-//     } 
-//     catch (err) {
-//         console.error(err);
-//         res.status(500).json({
-//             error: "Server error"
-//         });
-//     }
-//   }
-// );
-
-// export default router;
-
 
 
 // db.prepare(`
