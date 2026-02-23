@@ -89,6 +89,34 @@ db.prepare(
     `
 ).run();
 
+db.prepare(
+    `
+    CREATE TABLE IF NOT EXISTS meal_tracking (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER,
+    date TEXT NOT NULL,
+    breakfast_done INTEGER DEFAULT 0,
+    lunch_done INTEGER DEFAULT 0,
+    dinner_done INTEGER DEFAULT 0,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(user_id) REFERENCES users(id),
+    UNIQUE(user_id, date)
+    )
+    `
+).run();
+
+db.prepare(
+    `
+    CREATE TABLE IF NOT EXISTS user_settings (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER UNIQUE,
+    main_tab_id INTEGER,
+    FOREIGN KEY(user_id) REFERENCES users(id),
+    FOREIGN KEY(main_tab_id) REFERENCES tabs(id)
+    )
+    `
+).run();
+
 ////////////////////////////////////////
 //////////////////// UPLOAD IMAGE 
 ////////////////////////////////////////
@@ -965,6 +993,112 @@ app.get("/api/thread/:thread_id/chats", isLoggedIn, isThreadOwner, (req, res) =>
 
 });
 
+//////////////////// MEAL TRACKING API ////////////////////
+
+app.post("/api/main-tab/set", isLoggedIn, (req, res) => {
+    const userId = req.user.id;
+    const { tabId } = req.body;
+
+    // If tabId is null or 0, unset the main tab
+    if (tabId === null || tabId === 0 || tabId === undefined) {
+        const existing = db.prepare("SELECT * FROM user_settings WHERE user_id = ?").get(userId);
+        
+        if (existing) {
+            db.prepare("UPDATE user_settings SET main_tab_id = NULL WHERE user_id = ?")
+                .run(userId);
+        }
+        
+        return res.json({ success: true, main_tab_id: null });
+    }
+
+    // Verify tab belongs to user
+    const tab = db.prepare("SELECT * FROM tabs WHERE id = ? AND user_id = ?").get(tabId, userId);
+    if (!tab) {
+        return res.status(404).json({ error: "Tab not found" });
+    }
+
+    // Check if settings exist for user
+    const existing = db.prepare("SELECT * FROM user_settings WHERE user_id = ?").get(userId);
+    
+    if (existing) {
+        db.prepare("UPDATE user_settings SET main_tab_id = ? WHERE user_id = ?")
+            .run(tabId, userId);
+    } else {
+        db.prepare("INSERT INTO user_settings (user_id, main_tab_id) VALUES (?, ?)")
+            .run(userId, tabId);
+    }
+
+    res.json({ success: true, main_tab_id: tabId });
+});
+
+app.get("/api/main-tab", isLoggedIn, (req, res) => {
+    const userId = req.user.id;
+
+    const settings = db.prepare("SELECT main_tab_id FROM user_settings WHERE user_id = ?").get(userId);
+    
+    res.json({ 
+        success: true, 
+        main_tab_id: settings ? settings.main_tab_id : null 
+    });
+});
+
+app.post("/api/meal-tracking/save", isLoggedIn, (req, res) => {
+    const userId = req.user.id;
+    const { date, breakfast_done, lunch_done, dinner_done } = req.body;
+
+    if (!date) {
+        return res.status(400).json({ error: "date is required" });
+    }
+
+    const existing = db.prepare(
+        "SELECT * FROM meal_tracking WHERE user_id = ? AND date = ?"
+    ).get(userId, date);
+
+    if (existing) {
+        db.prepare(
+            "UPDATE meal_tracking SET breakfast_done = ?, lunch_done = ?, dinner_done = ? WHERE user_id = ? AND date = ?"
+        ).run(breakfast_done || 0, lunch_done || 0, dinner_done || 0, userId, date);
+    } else {
+        db.prepare(
+            "INSERT INTO meal_tracking (user_id, date, breakfast_done, lunch_done, dinner_done) VALUES (?, ?, ?, ?, ?)"
+        ).run(userId, date, breakfast_done || 0, lunch_done || 0, dinner_done || 0);
+    }
+
+    res.json({ success: true });
+});
+
+app.get("/api/meal-tracking/heatmap", isLoggedIn, (req, res) => {
+    const userId = req.user.id;
+
+    const data = db.prepare(
+        "SELECT date, breakfast_done, lunch_done, dinner_done FROM meal_tracking WHERE user_id = ? ORDER BY date ASC"
+    ).all(userId);
+
+    // Transform data into heatmap format
+    const heatmapData = {};
+    data.forEach(row => {
+        const value = (row.breakfast_done ? 1 : 0) + (row.lunch_done ? 1 : 0) + (row.dinner_done ? 1 : 0);
+        heatmapData[row.date] = value;
+    });
+
+    res.json({ success: true, heatmap: heatmapData });
+});
+
+app.get("/api/meal-tracking/:date", isLoggedIn, (req, res) => {
+    const userId = req.user.id;
+    const { date } = req.params;
+
+    const tracking = db.prepare(
+        "SELECT breakfast_done, lunch_done, dinner_done FROM meal_tracking WHERE user_id = ? AND date = ?"
+    ).get(userId, date);
+
+    res.json({ 
+        success: true, 
+        breakfast_done: tracking?.breakfast_done || 0,
+        lunch_done: tracking?.lunch_done || 0,
+        dinner_done: tracking?.dinner_done || 0
+    });
+});
 
 // db.prepare(`
 //   ALTER TABLE chats
