@@ -162,7 +162,7 @@ const app = express();
 
 app.use(cors({
     origin: isProduction
-        ? "https://your-frontend-domain.com"
+        ? "https://giabao6769.github.io/"
         : "http://127.0.0.1:5500",
     credentials: true
 }));
